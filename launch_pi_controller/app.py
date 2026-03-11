@@ -46,7 +46,9 @@ class LaunchPiControllerApp:
         self.tab_hitboxes: list[tuple[int, pygame.Rect]] = []
         self.fonts: dict[str, pygame.font.Font] = {}
         self.screen: pygame.Surface | None = None
+        self.display_surface: pygame.Surface | None = None
         self.clock: pygame.time.Clock | None = None
+        self.display_rotation = 0
 
     def run(self) -> int:
         pygame.init()
@@ -72,22 +74,27 @@ class LaunchPiControllerApp:
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_F5:
                     self.restart_services()
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    self._handle_pointer_down(event.pos)
+                    self._handle_pointer_down(self._window_to_logical(event.pos))
                 elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                    self.current_tab.handle_pointer_up(self, event.pos)
+                    self.current_tab.handle_pointer_up(self, self._window_to_logical(event.pos))
                 elif event.type == pygame.MOUSEMOTION and any(event.buttons):
-                    self.current_tab.handle_pointer_motion(self, event.pos, event.rel, event.buttons)
+                    self.current_tab.handle_pointer_motion(
+                        self,
+                        self._window_to_logical(event.pos),
+                        self._window_delta_to_logical(event.rel),
+                        event.buttons,
+                    )
                 elif event.type == pygame.FINGERDOWN:
                     self._handle_pointer_down(self._finger_to_pixels(event))
                 elif event.type == pygame.FINGERUP:
                     self.current_tab.handle_pointer_up(self, self._finger_to_pixels(event))
                 elif event.type == pygame.FINGERMOTION:
-                    pos = self._finger_to_pixels(event)
-                    rel = (
-                        int(event.dx * self.screen.get_width()),
-                        int(event.dy * self.screen.get_height()),
+                    self.current_tab.handle_pointer_motion(
+                        self,
+                        self._finger_to_pixels(event),
+                        self._finger_delta_to_pixels(event),
+                        (1, 0, 0),
                     )
-                    self.current_tab.handle_pointer_motion(self, pos, rel, (1, 0, 0))
 
             self._draw()
             assert self.clock is not None
@@ -104,7 +111,19 @@ class LaunchPiControllerApp:
         flags = pygame.DOUBLEBUF
         if self.config.display.fullscreen:
             flags |= pygame.FULLSCREEN
-        self.screen = pygame.display.set_mode((self.config.display.width, self.config.display.height), flags)
+
+        logical_size = (self.config.display.width, self.config.display.height)
+        self.display_surface = pygame.display.set_mode(logical_size, flags)
+        display_size = self.display_surface.get_size()
+        self.display_rotation = self._detect_display_rotation(logical_size, display_size)
+
+        if self.display_rotation:
+            # KMSDRM still exposes the portrait framebuffer, so render into a
+            # landscape canvas and rotate it for presentation.
+            self.screen = pygame.Surface(logical_size).convert()
+        else:
+            self.screen = self.display_surface
+
         pygame.display.set_caption("Pi Launchpad Controller")
         pygame.mouse.set_visible(not self.config.display.hide_mouse)
 
@@ -156,9 +175,57 @@ class LaunchPiControllerApp:
                 break
             effect_tab.handle_midi_message(message, self.config.effect_device.channel)
 
-    def _finger_to_pixels(self, event: pygame.event.Event) -> tuple[int, int]:
+    def _detect_display_rotation(
+        self,
+        logical_size: tuple[int, int],
+        display_size: tuple[int, int],
+    ) -> int:
+        logical_w, logical_h = logical_size
+        display_w, display_h = display_size
+        if (logical_w >= logical_h) == (display_w >= display_h):
+            return 0
+        if display_size == (logical_h, logical_w):
+            return 270 if logical_w >= logical_h else 90
+        return 0
+
+    def _window_to_logical(self, pos: tuple[int, int]) -> tuple[int, int]:
         assert self.screen is not None
-        return int(event.x * self.screen.get_width()), int(event.y * self.screen.get_height())
+        width, height = self.screen.get_size()
+        x, y = pos
+        if self.display_rotation == 90:
+            return self._clamp_point((width - 1 - y, x), width, height)
+        if self.display_rotation == 180:
+            return self._clamp_point((width - 1 - x, height - 1 - y), width, height)
+        if self.display_rotation == 270:
+            return self._clamp_point((y, height - 1 - x), width, height)
+        return self._clamp_point((x, y), width, height)
+
+    def _window_delta_to_logical(self, rel: tuple[int, int]) -> tuple[int, int]:
+        dx, dy = rel
+        if self.display_rotation == 90:
+            return -dy, dx
+        if self.display_rotation == 180:
+            return -dx, -dy
+        if self.display_rotation == 270:
+            return dy, -dx
+        return dx, dy
+
+    def _clamp_point(self, pos: tuple[int, int], width: int, height: int) -> tuple[int, int]:
+        x = max(0, min(width - 1, int(pos[0])))
+        y = max(0, min(height - 1, int(pos[1])))
+        return x, y
+
+    def _finger_to_pixels(self, event: pygame.event.Event) -> tuple[int, int]:
+        assert self.display_surface is not None
+        display_w, display_h = self.display_surface.get_size()
+        window_pos = (int(event.x * display_w), int(event.y * display_h))
+        return self._window_to_logical(window_pos)
+
+    def _finger_delta_to_pixels(self, event: pygame.event.Event) -> tuple[int, int]:
+        assert self.display_surface is not None
+        display_w, display_h = self.display_surface.get_size()
+        window_rel = (int(event.dx * display_w), int(event.dy * display_h))
+        return self._window_delta_to_logical(window_rel)
 
     def _handle_pointer_down(self, pos: tuple[int, int]) -> None:
         for idx, rect in self.tab_hitboxes:
@@ -169,17 +236,18 @@ class LaunchPiControllerApp:
 
     def _draw(self) -> None:
         assert self.screen is not None
-        self._draw_background(self.screen)
+        surface = self.screen
+        self._draw_background(surface)
 
-        width, height = self.screen.get_size()
+        width, height = surface.get_size()
         sidebar = pygame.Rect(18, 18, 160, height - 36)
         content = pygame.Rect(sidebar.right + 18, 18, width - sidebar.width - 54, height - 36)
 
-        pygame.draw.rect(self.screen, (15, 20, 28), sidebar, border_radius=26)
-        pygame.draw.rect(self.screen, (58, 71, 90), sidebar, 2, border_radius=26)
+        pygame.draw.rect(surface, (15, 20, 28), sidebar, border_radius=26)
+        pygame.draw.rect(surface, (58, 71, 90), sidebar, 2, border_radius=26)
         title_rect = pygame.Rect(sidebar.x + 18, sidebar.y + 16, sidebar.width - 36, 74)
-        pygame.draw.rect(self.screen, PANEL_ALT, title_rect, border_radius=20)
-        pygame.draw.rect(self.screen, ACCENT, title_rect, 2, border_radius=20)
+        pygame.draw.rect(surface, PANEL_ALT, title_rect, border_radius=20)
+        pygame.draw.rect(surface, ACCENT, title_rect, 2, border_radius=20)
         self._draw_text("Pi", (title_rect.x + 18, title_rect.y + 25), self.fonts["title"], TEXT_PRIMARY)
         self._draw_text("Controller", (title_rect.x + 18, title_rect.y + 51), self.fonts["small"], TEXT_MUTED)
 
@@ -190,19 +258,32 @@ class LaunchPiControllerApp:
             active = idx == self.active_tab_index
             color = ACCENT if active else (28, 36, 49)
             text_color = (15, 18, 24) if active else TEXT_PRIMARY
-            pygame.draw.rect(self.screen, color, tab_rect, border_radius=18)
-            pygame.draw.rect(self.screen, (236, 240, 244) if active else (61, 75, 94), tab_rect, 2, border_radius=18)
+            pygame.draw.rect(surface, color, tab_rect, border_radius=18)
+            pygame.draw.rect(surface, (236, 240, 244) if active else (61, 75, 94), tab_rect, 2, border_radius=18)
             label = tab.title if len(tab.title) <= 10 else tab.title[:10]
             self._draw_text(label, tab_rect.center, self.fonts["body"], text_color, anchor="center")
             self.tab_hitboxes.append((idx, tab_rect))
 
         footer = pygame.Rect(sidebar.x + 14, sidebar.bottom - 84, sidebar.width - 28, 70)
-        pygame.draw.rect(self.screen, (11, 15, 21), footer, border_radius=18)
-        pygame.draw.rect(self.screen, (58, 71, 90), footer, 2, border_radius=18)
+        pygame.draw.rect(surface, (11, 15, 21), footer, border_radius=18)
+        pygame.draw.rect(surface, (58, 71, 90), footer, 2, border_radius=18)
         self._draw_text("F5 Restart", (footer.x + 14, footer.y + 24), self.fonts["small"], TEXT_PRIMARY)
         self._draw_text("Esc Exit", (footer.x + 14, footer.y + 46), self.fonts["small"], TEXT_MUTED)
 
-        self.current_tab.draw(self, self.screen, content)
+        self.current_tab.draw(self, surface, content)
+        self._present()
+
+    def _present(self) -> None:
+        assert self.screen is not None
+        assert self.display_surface is not None
+        if self.display_surface is self.screen:
+            pygame.display.flip()
+            return
+
+        presented = pygame.transform.rotate(self.screen, self.display_rotation)
+        if presented.get_size() != self.display_surface.get_size():
+            presented = pygame.transform.scale(presented, self.display_surface.get_size())
+        self.display_surface.blit(presented, (0, 0))
         pygame.display.flip()
 
     def _draw_background(self, surface: pygame.Surface) -> None:
