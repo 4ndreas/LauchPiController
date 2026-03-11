@@ -377,3 +377,39 @@ If implementation starts now, the smallest useful milestone is:
 5. heartbeat support
 
 That milestone is enough to validate the architecture before defining the custom Color and Extras protocols.
+
+## Current v1 Status
+
+Implemented in this folder now:
+
+- fullscreen `pygame` application shell
+- Preview tab with embedded Art-Net receiver
+- Effect tab that sends Launch Control-compatible UDP MIDI `CC` / `NOTE` messages
+- incoming MIDI feedback handling for button colors and control state
+- heartbeat sender compatible with the existing Network MIDI tooling
+- Settings tab with persisted JSON config
+- placeholder Color and Extras tabs until their contracts are defined
+
+Not implemented in `v1` yet:
+
+- Launch Control SysEx mode handling
+- true Launchpad MK2 matrix emulation
+- finalized Color and Extras MIDI contracts
+- production `systemd` unit files
+
+## Run
+
+From this directory:
+
+```bash
+python -m pip install -r requirements.txt
+python main.py
+```
+
+The default config is stored in `config.json`.
+
+Important:
+
+- the checked-in default config uses loopback (`127.0.0.1`) for the Effect device and heartbeat target
+- on the Raspberry Pi, update those addresses in the Settings tab or in `config.json`
+- the current heartbeat name is display-only in the UI and should be edited in `config.json` if needed

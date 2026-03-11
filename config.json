@@ -1,0 +1,29 @@
+{
+  "display": {
+    "fps": 60,
+    "fullscreen": false,
+    "height": 480,
+    "hide_mouse": false,
+    "width": 1920
+  },
+  "effect_device": {
+    "bind_host": "0.0.0.0",
+    "channel": 0,
+    "heartbeat_interval_s": 2.0,
+    "heartbeat_name": "launchcontrol_9",
+    "heartbeat_port": 22990,
+    "heartbeat_target_host": "127.0.0.1",
+    "name": "launchcontrol_effect",
+    "port": 21931,
+    "send_heartbeat": true,
+    "target_host": "127.0.0.1"
+  },
+  "preview": {
+    "bind_host": "0.0.0.0",
+    "cols": 32,
+    "net": 0,
+    "port": 6454,
+    "rows": 16,
+    "use_sync": true
+  }
+}
