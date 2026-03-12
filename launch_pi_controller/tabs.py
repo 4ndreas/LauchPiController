@@ -23,15 +23,18 @@ if TYPE_CHECKING:
     from .app import LaunchPiControllerApp
 
 
-TAB_BACKGROUND = (12, 16, 24)
-PANEL_BACKGROUND = (24, 31, 42)
-PANEL_ALT = (28, 36, 49)
-TEXT_PRIMARY = (228, 233, 239)
-TEXT_MUTED = (140, 150, 165)
-ACCENT = (91, 196, 191)
-ACCENT_ALT = (245, 166, 72)
-WARNING = (232, 100, 82)
-SUCCESS = (122, 201, 102)
+PANEL_BACKGROUND = (48, 49, 53)
+PANEL_ALT = (61, 62, 68)
+STATUS_BACKGROUND = (34, 35, 40)
+STATUS_ALT = (52, 53, 58)
+TEXT_PRIMARY = (234, 229, 221)
+TEXT_MUTED = (171, 164, 152)
+TEXT_DARK = (28, 24, 22)
+ACCENT = (235, 134, 40)
+ACCENT_ALT = (190, 92, 24)
+OUTLINE = (108, 99, 89)
+WARNING = (202, 96, 70)
+SUCCESS = (247, 171, 92)
 _FONT_CACHE: dict[tuple[str, int, bool], pygame.font.Font] = {}
 
 
@@ -61,48 +64,44 @@ class PreviewTab(BaseTab):
     title = "Preview"
 
     def draw(self, app: LaunchPiControllerApp, surface: pygame.Surface, rect: pygame.Rect) -> None:
-        _draw_panel(surface, rect, "Art-Net Preview", "Live input from the configured Art-Net universe")
-        inner = rect.inflate(-24, -24)
-        preview_rect = pygame.Rect(inner.x, inner.y + 48, inner.width, inner.height - 48)
-        preview_rect.height -= 74
+        main_rect, status_rect = _draw_tab_shell(surface, rect, "Preview", "Signal / Art-Net", status_width=312)
+        preview_rect = main_rect.inflate(-2, -2)
 
         if app.preview_service is None:
-            _draw_center_notice(surface, preview_rect, "Preview offline", app.preview_error or "Preview service is not running")
+            _draw_status_box_message(surface, status_rect, "Offline", app.preview_error or "Preview service is not running")
+            _draw_center_notice(surface, preview_rect, "Preview offline", "Bind error or service not started")
             return
 
         frame, stats = app.preview_service.get_snapshot()
-        rows = int(stats["rows"])
-        cols = int(stats["cols"])
-        aspect = cols / max(1, rows)
-        target_w = preview_rect.width
-        target_h = int(target_w / aspect)
-        if target_h > preview_rect.height:
-            target_h = preview_rect.height
-            target_w = int(target_h * aspect)
-        scaled_rect = pygame.Rect(0, 0, target_w, target_h)
-        scaled_rect.center = preview_rect.center
-
         arr = frame.transpose((1, 0, 2))
-        small = pygame.surfarray.make_surface(arr)
-        scaled = pygame.transform.scale(small, scaled_rect.size)
-        surface.blit(scaled, scaled_rect.topleft)
-        pygame.draw.rect(surface, (49, 59, 74), scaled_rect, 2, border_radius=16)
+        preview_surface = pygame.surfarray.make_surface(arr)
+        stretched = pygame.transform.scale(preview_surface, preview_rect.size)
+        surface.blit(stretched, preview_rect.topleft)
+        pygame.draw.rect(surface, (83, 79, 74), preview_rect, 1, border_radius=12)
+        fps_rect = pygame.Rect(preview_rect.x + 10, preview_rect.y + 10, 96, 28)
+        pygame.draw.rect(surface, (24, 24, 27), fps_rect, border_radius=10)
+        pygame.draw.rect(surface, OUTLINE, fps_rect, 1, border_radius=10)
+        _draw_text(surface, _get_font("DejaVu Sans Mono", 15, True), f"{app.render_fps:04.1f} fps", fps_rect.center, TEXT_PRIMARY, anchor="center")
 
         if not stats["has_signal"]:
-            overlay = pygame.Surface(scaled_rect.size, pygame.SRCALPHA)
-            overlay.fill((6, 8, 12, 170))
-            surface.blit(overlay, scaled_rect.topleft)
-            _draw_center_notice(surface, scaled_rect, "No signal", "Waiting for Art-Net frames")
+            overlay = pygame.Surface(preview_rect.size, pygame.SRCALPHA)
+            overlay.fill((18, 17, 18, 170))
+            surface.blit(overlay, preview_rect.topleft)
+            _draw_center_notice(surface, preview_rect, "No Art-Net", "Waiting for frames")
 
-        footer = pygame.Rect(inner.x, rect.bottom - 76, inner.width, 56)
-        _draw_info_badge(surface, footer, f"{cols} x {rows}", ACCENT)
-        _draw_info_badge(surface, footer.move(145, 0), f"DMX {int(stats['dmx_packets'])}", ACCENT_ALT)
-        _draw_info_badge(surface, footer.move(310, 0), f"Sync {int(stats['sync_packets'])}", SUCCESS)
-        if stats["last_dmx_age_s"] >= 0:
-            age_text = f"{stats['last_dmx_age_s']:.1f}s ago"
-        else:
-            age_text = "never"
-        _draw_info_badge(surface, footer.move(475, 0), f"Last frame {age_text}", (110, 132, 242))
+        _draw_status_lines(
+            surface,
+            status_rect,
+            [
+                ("Matrix", f"{int(stats['cols'])} x {int(stats['rows'])}"),
+                ("DMX packets", str(int(stats["dmx_packets"]))),
+                ("Sync packets", str(int(stats["sync_packets"]))),
+                ("Render fps", f"{app.render_fps:.1f}"),
+                ("Use sync", "Yes" if bool(stats["use_sync"]) else "No"),
+                ("Last DMX", _format_age(float(stats["last_dmx_age_s"]))),
+                ("Last Sync", _format_age(float(stats["last_sync_age_s"]))),
+            ],
+        )
 
 
 @dataclass(slots=True)
@@ -120,77 +119,96 @@ class EffectTab(BaseTab):
         self.track_leds = {track_key(idx): 0 for idx in range(8)}
         self.arrow_leds = {arrow_key(name): 0 for name in ARROW_CCS}
         self.hitboxes: list[tuple[str, str, pygame.Rect]] = []
+        self.slider_rects: dict[str, pygame.Rect] = {}
         self.drag_state: DragState | None = None
         self.active_button: tuple[str, str] | None = None
 
     def draw(self, app: LaunchPiControllerApp, surface: pygame.Surface, rect: pygame.Rect) -> None:
-        _draw_panel(surface, rect, "Effect Controller", "Launch Control-compatible CC/NOTE I/O over UDP")
-        inner = rect.inflate(-24, -24)
-        status = app.effect_device.get_status() if app.effect_device is not None else None
-        status_line = "Device offline"
-        status_color = WARNING
-        if status is not None:
-            age = float(status["last_rx_age_s"])
-            if age >= 0 and age < 5:
-                status_line = f"Feedback active on {status['target_host']}:{status['port']}"
-                status_color = SUCCESS
-            else:
-                status_line = f"Sending to {status['target_host']}:{status['port']}"
-                status_color = ACCENT_ALT
-        elif app.effect_error:
-            status_line = app.effect_error
-        _draw_info_badge(surface, pygame.Rect(inner.x, inner.y, 360, 34), status_line, status_color)
-
-        control_area = pygame.Rect(inner.x, inner.y + 56, inner.width, inner.height - 138)
-        strip_width = max(96, (control_area.width - 56) // 8)
-        knob_radius = max(28, min(42, strip_width // 3))
-        spacing = (control_area.width - strip_width * 8) // 9
-
+        main_rect, status_rect = _draw_tab_shell(surface, rect, "Effect", "Controller Status", status_width=336)
         self.hitboxes = []
+
+        if app.effect_device is None:
+            _draw_status_box_message(surface, status_rect, "Offline", app.effect_error or "Effect MIDI device not started")
+            _draw_center_notice(surface, main_rect, "Device offline", "Check bind/target settings")
+            return
+
+        status = app.effect_device.get_status()
+        controls_rect = main_rect.inflate(-4, -4)
+        gap = 6
+        strip_width = max(112, (controls_rect.width - gap * 9) // 8)
+        strip_height = controls_rect.height
+        slider_gap = 8
+        slider_w = max(34, min(42, (strip_width - 28) // 2))
+        slider_h = strip_height - 118
+        slider_top = controls_rect.y + 34
+
+        self.slider_rects = {}
         for idx in range(8):
-            strip_x = control_area.x + spacing + idx * (strip_width + spacing)
-            strip_rect = pygame.Rect(strip_x, control_area.y, strip_width, control_area.height)
-            pygame.draw.rect(surface, PANEL_ALT, strip_rect, border_radius=24)
-            pygame.draw.rect(surface, (48, 61, 77), strip_rect, 2, border_radius=24)
+            strip_x = controls_rect.x + gap + idx * (strip_width + gap)
+            strip_rect = pygame.Rect(strip_x, controls_rect.y, strip_width, strip_height)
+            pygame.draw.rect(surface, PANEL_ALT, strip_rect, border_radius=18)
+            pygame.draw.rect(surface, OUTLINE, strip_rect, 1, border_radius=18)
 
-            knob1_center = (strip_rect.centerx, strip_rect.y + 70)
-            knob2_center = (strip_rect.centerx, strip_rect.y + 170)
-            track_rect = pygame.Rect(strip_rect.x + 14, strip_rect.bottom - 82, strip_rect.width - 28, 54)
+            slider_x = strip_rect.x + (strip_rect.width - (slider_w * 2 + slider_gap)) // 2
+            slider1_rect = pygame.Rect(slider_x, slider_top, slider_w, slider_h)
+            slider2_rect = pygame.Rect(slider_x + slider_w + slider_gap, slider_top, slider_w, slider_h)
 
-            self._draw_knob(surface, knob1_center, knob_radius, self.knob_values[knob_key(1, idx)], f"T{idx + 1}")
-            self._draw_knob(surface, knob2_center, knob_radius, self.knob_values[knob_key(2, idx)], f"S{idx + 1}")
+            button_w = min(72, strip_rect.width - 22)
+            button_h = int(button_w * 0.75)
+            track_rect = pygame.Rect(strip_rect.centerx - button_w // 2, strip_rect.bottom - button_h - 10, button_w, button_h)
+
+            _draw_text(surface, _get_font("DejaVu Sans", 15, True), f"CH {idx + 1}", (strip_rect.centerx, strip_rect.y + 18), TEXT_MUTED, anchor="center")
+            self._draw_slider(surface, slider1_rect, self.knob_values[knob_key(1, idx)], f"T{idx + 1}")
+            self._draw_slider(surface, slider2_rect, self.knob_values[knob_key(2, idx)], f"S{idx + 1}")
 
             track_name = track_key(idx)
             track_color = launch_control_led_color(self.track_leds[track_name])
-            pygame.draw.rect(surface, track_color, track_rect, border_radius=16)
-            border_color = TEXT_PRIMARY if self.active_button == ("track", track_name) else (66, 77, 96)
-            pygame.draw.rect(surface, border_color, track_rect, 3, border_radius=16)
-            _draw_text(surface, app.fonts["body"], f"{idx + 1}", track_rect.center, TEXT_PRIMARY, anchor="center")
+            pygame.draw.rect(surface, track_color, track_rect, border_radius=12)
+            border = TEXT_PRIMARY if self.active_button == ("track", track_name) else OUTLINE
+            pygame.draw.rect(surface, border, track_rect, 2, border_radius=12)
+            _draw_text(surface, _get_font("DejaVu Sans", 16, True), f"{idx + 1}", track_rect.center, TEXT_DARK, anchor="center")
 
-            self.hitboxes.append(("knob", knob_key(1, idx), pygame.Rect(knob1_center[0] - knob_radius, knob1_center[1] - knob_radius, knob_radius * 2, knob_radius * 2)))
-            self.hitboxes.append(("knob", knob_key(2, idx), pygame.Rect(knob2_center[0] - knob_radius, knob2_center[1] - knob_radius, knob_radius * 2, knob_radius * 2)))
+            self.slider_rects[knob_key(1, idx)] = slider1_rect
+            self.slider_rects[knob_key(2, idx)] = slider2_rect
+            self.hitboxes.append(("slider", knob_key(1, idx), slider1_rect))
+            self.hitboxes.append(("slider", knob_key(2, idx), slider2_rect))
             self.hitboxes.append(("track", track_name, track_rect))
 
-        arrows_rect = pygame.Rect(inner.right - 296, rect.bottom - 108, 272, 84)
+        arrow_area = _draw_status_lines(
+            surface,
+            status_rect,
+            [
+                ("Target", str(status["target_host"])),
+                ("Port", str(status["port"])),
+                ("Feedback", _format_feedback_age(float(status["last_rx_age_s"]))),
+                ("TX", str(int(status["short_out_messages"]))),
+                ("RX", str(int(status["short_in_messages"]))),
+                ("Heartbeat", str(status["heartbeat_name"])),
+            ],
+            reserve_bottom=168,
+        )
+
+        arrow_gap = 10
+        arrow_w = min(120, (arrow_area.width - arrow_gap) // 2)
+        arrow_h = int(arrow_w * 0.75)
+        arrow_total_w = arrow_w * 2 + arrow_gap
+        arrow_total_h = arrow_h * 2 + arrow_gap
+        base_x = arrow_area.x + max(0, (arrow_area.width - arrow_total_w) // 2)
+        base_y = arrow_area.y + max(0, (arrow_area.height - arrow_total_h) // 2)
         arrow_layout = {
-            "up": pygame.Rect(arrows_rect.x + 92, arrows_rect.y, 88, 36),
-            "left": pygame.Rect(arrows_rect.x, arrows_rect.y + 44, 88, 36),
-            "down": pygame.Rect(arrows_rect.x + 92, arrows_rect.y + 44, 88, 36),
-            "right": pygame.Rect(arrows_rect.x + 184, arrows_rect.y + 44, 88, 36),
+            "up": pygame.Rect(base_x, base_y, arrow_w, arrow_h),
+            "right": pygame.Rect(base_x + arrow_w + arrow_gap, base_y, arrow_w, arrow_h),
+            "left": pygame.Rect(base_x, base_y + arrow_h + arrow_gap, arrow_w, arrow_h),
+            "down": pygame.Rect(base_x + arrow_w + arrow_gap, base_y + arrow_h + arrow_gap, arrow_w, arrow_h),
         }
+
         for name, arrow_rect in arrow_layout.items():
             led_color = launch_control_led_color(self.arrow_leds[arrow_key(name)])
-            pygame.draw.rect(surface, led_color, arrow_rect, border_radius=14)
-            border_color = TEXT_PRIMARY if self.active_button == ("arrow", arrow_key(name)) else (66, 77, 96)
-            pygame.draw.rect(surface, border_color, arrow_rect, 3, border_radius=14)
-            _draw_text(surface, app.fonts["body"], name.upper(), arrow_rect.center, TEXT_PRIMARY, anchor="center")
+            pygame.draw.rect(surface, led_color, arrow_rect, border_radius=12)
+            border = TEXT_PRIMARY if self.active_button == ("arrow", arrow_key(name)) else OUTLINE
+            pygame.draw.rect(surface, border, arrow_rect, 2, border_radius=12)
+            _draw_text(surface, _get_font("DejaVu Sans", 15, True), name.upper(), arrow_rect.center, TEXT_DARK, anchor="center")
             self.hitboxes.append(("arrow", arrow_key(name), arrow_rect))
-
-        footer = pygame.Rect(inner.x, rect.bottom - 76, inner.width - 320, 56)
-        if status is not None:
-            _draw_info_badge(surface, footer, f"TX {int(status['short_out_messages'])}", ACCENT)
-            _draw_info_badge(surface, footer.move(145, 0), f"RX {int(status['short_in_messages'])}", ACCENT_ALT)
-            _draw_info_badge(surface, footer.move(290, 0), f"Heartbeat {status['heartbeat_name']}", (110, 132, 242))
 
     def handle_pointer_down(self, app: LaunchPiControllerApp, pos: tuple[int, int]) -> None:
         if app.effect_device is None:
@@ -199,16 +217,15 @@ class EffectTab(BaseTab):
         if hit is None:
             return
         kind, key = hit
-        if kind == "knob":
+        if kind == "slider":
             self.drag_state = DragState(key=key, start_y=pos[1], start_value=self.knob_values[key])
+            self._apply_slider_position(app, key, pos[1])
             return
-
         if kind == "track":
             note = TRACK_BUTTON_NOTES[int(key.rsplit("_", 1)[-1])]
             app.effect_device.send_note(note, 127)
             self.active_button = (kind, key)
             return
-
         if kind == "arrow":
             cc = ARROW_CCS[key.split("_", 1)[1]]
             app.effect_device.send_cc(cc, 127)
@@ -242,18 +259,7 @@ class EffectTab(BaseTab):
         if self.drag_state is None or app.effect_device is None:
             return
 
-        delta = self.drag_state.start_y - pos[1]
-        scaled = self.drag_state.start_value + int(delta * 0.75)
-        value = max(0, min(127, scaled))
-        if value == self.knob_values[self.drag_state.key]:
-            return
-
-        self.knob_values[self.drag_state.key] = value
-        _, row_str, idx_str = self.drag_state.key.split("_")
-        row = int(row_str)
-        idx = int(idx_str)
-        cc_list = ROW1_KNOB_CCS if row == 1 else ROW2_KNOB_CCS
-        app.effect_device.send_cc(cc_list[idx], value)
+        self._apply_slider_position(app, self.drag_state.key, pos[1])
 
     def handle_midi_message(self, message: MidiShortMessage, channel: int) -> None:
         if message.channel != channel:
@@ -291,39 +297,43 @@ class EffectTab(BaseTab):
                 return kind, key
         return None
 
-    def _draw_knob(
+    def _apply_slider_position(self, app: LaunchPiControllerApp, key: str, pos_y: int) -> None:
+        slider_rect = self.slider_rects.get(key)
+        if slider_rect is None:
+            return
+        clamped_y = max(slider_rect.top, min(slider_rect.bottom, pos_y))
+        ratio = 1.0 - ((clamped_y - slider_rect.top) / max(1, slider_rect.height))
+        value = max(0, min(127, int(round(ratio * 127))))
+        if value == self.knob_values[key]:
+            return
+        self.knob_values[key] = value
+        _, row_str, idx_str = key.split("_")
+        row = int(row_str)
+        idx = int(idx_str)
+        cc_list = ROW1_KNOB_CCS if row == 1 else ROW2_KNOB_CCS
+        app.effect_device.send_cc(cc_list[idx], value)
+
+    def _draw_slider(
         self,
         surface: pygame.Surface,
-        center: tuple[int, int],
-        radius: int,
+        rect: pygame.Rect,
         value: int,
         label: str,
     ) -> None:
-        pygame.draw.circle(surface, (15, 20, 28), center, radius + 12)
-        pygame.draw.circle(surface, (52, 63, 78), center, radius + 6, 6)
-        pygame.draw.circle(surface, (94, 108, 124), center, radius)
-
-        start_angle = math.radians(225)
-        sweep = math.radians(270)
-        value_ratio = value / 127.0
-        end_angle = start_angle - sweep * value_ratio
-        pygame.draw.arc(
-            surface,
-            ACCENT,
-            pygame.Rect(center[0] - radius - 8, center[1] - radius - 8, (radius + 8) * 2, (radius + 8) * 2),
-            start_angle,
-            end_angle,
-            6,
-        )
-        pointer_length = radius - 8
-        pointer_angle = start_angle - sweep * value_ratio
-        pointer_pos = (
-            int(center[0] + math.cos(pointer_angle) * pointer_length),
-            int(center[1] - math.sin(pointer_angle) * pointer_length),
-        )
-        pygame.draw.line(surface, (12, 16, 24), center, pointer_pos, 4)
-        _draw_text(surface, _get_font("DejaVu Sans", 18, True), label, (center[0], center[1] - radius - 22), TEXT_MUTED, anchor="center")
-        _draw_text(surface, _get_font("DejaVu Sans Mono", 18, True), f"{value:03d}", (center[0], center[1]), TEXT_PRIMARY, anchor="center")
+        pygame.draw.rect(surface, STATUS_BACKGROUND, rect, border_radius=12)
+        pygame.draw.rect(surface, OUTLINE, rect, 2, border_radius=12)
+        track_rect = pygame.Rect(rect.centerx - 6, rect.y + 18, 12, rect.height - 36)
+        pygame.draw.rect(surface, (80, 82, 88), track_rect, border_radius=6)
+        fill_height = max(8, int((value / 127.0) * track_rect.height))
+        fill_rect = pygame.Rect(track_rect.x, track_rect.bottom - fill_height, track_rect.width, fill_height)
+        pygame.draw.rect(surface, ACCENT, fill_rect, border_radius=6)
+        thumb_y = track_rect.bottom - int((value / 127.0) * track_rect.height)
+        thumb_top = max(rect.y + 18, min(rect.bottom - 34, thumb_y - 8))
+        thumb_rect = pygame.Rect(rect.x + 6, thumb_top, rect.width - 12, 16)
+        pygame.draw.rect(surface, TEXT_PRIMARY, thumb_rect, border_radius=8)
+        pygame.draw.rect(surface, (82, 76, 70), thumb_rect, 2, border_radius=8)
+        _draw_text(surface, _get_font("DejaVu Sans", 14, True), label, (rect.centerx, rect.y + 10), TEXT_MUTED, anchor="center")
+        _draw_text(surface, _get_font("DejaVu Sans Mono", 14, True), f"{value:03d}", (rect.centerx, rect.bottom - 10), TEXT_PRIMARY, anchor="center")
 
 
 class PlaceholderTab(BaseTab):
@@ -332,13 +342,16 @@ class PlaceholderTab(BaseTab):
         self.subtitle = subtitle
 
     def draw(self, app: LaunchPiControllerApp, surface: pygame.Surface, rect: pygame.Rect) -> None:
-        _draw_panel(surface, rect, self.title, self.subtitle)
-        inner = rect.inflate(-24, -24)
-        _draw_center_notice(
+        main_rect, status_rect = _draw_tab_shell(surface, rect, self.title, "Status", status_width=300)
+        _draw_center_notice(surface, main_rect, "Waiting for spec", self.subtitle)
+        _draw_status_lines(
             surface,
-            inner,
-            "Spec still open",
-            "This tab is intentionally a placeholder until the MIDI contract is defined.",
+            status_rect,
+            [
+                ("State", "Blocked"),
+                ("Reason", "Contract missing"),
+                ("Action", "Define MIDI I/O"),
+            ],
         )
 
 
@@ -355,54 +368,9 @@ class SettingsTab(BaseTab):
         self.status_color = TEXT_MUTED
 
     def draw(self, app: LaunchPiControllerApp, surface: pygame.Surface, rect: pygame.Rect) -> None:
-        _draw_panel(surface, rect, "Settings", "Network endpoints and preview settings for v1")
-        inner = rect.inflate(-24, -24)
-        left = pygame.Rect(inner.x, inner.y + 40, max(560, inner.width // 2), inner.height - 56)
-        right = pygame.Rect(left.right + 20, inner.y + 40, inner.right - left.right - 20, inner.height - 56)
-
-        fields = self._fields(app)
-        self.field_hitboxes = []
-        row_h = 44
-        for idx, field in enumerate(fields):
-            row = pygame.Rect(left.x, left.y + idx * (row_h + 8), left.width, row_h)
-            bg = PANEL_ALT if field["editable"] else (18, 24, 34)
-            pygame.draw.rect(surface, bg, row, border_radius=12)
-            border_color = ACCENT if self.selected_field_id == field["id"] else (53, 65, 82)
-            pygame.draw.rect(surface, border_color, row, 2, border_radius=12)
-            _draw_text(surface, app.fonts["body"], field["label"], (row.x + 16, row.centery), TEXT_MUTED)
-            _draw_text(surface, app.fonts["mono"], field["value"], (row.right - 16, row.centery), TEXT_PRIMARY, anchor="right")
-            self.field_hitboxes.append((field["id"], row))
-
-        buttons_top = pygame.Rect(right.x, right.y, right.width, 116)
-        action_defs = [
-            ("toggle_heartbeat", f"Heartbeat {'ON' if app.config.effect_device.send_heartbeat else 'OFF'}", ACCENT_ALT),
-            ("toggle_sync", f"Preview Sync {'ON' if app.config.preview.use_sync else 'OFF'}", ACCENT),
-            ("toggle_fullscreen", f"Fullscreen {'ON' if app.config.display.fullscreen else 'OFF'}", (110, 132, 242)),
-            ("restart_runtime", "Restart I/O", SUCCESS),
-        ]
-        self.action_hitboxes = []
-        for idx, (action_id, label, color) in enumerate(action_defs):
-            bx = buttons_top.x + (idx % 2) * ((buttons_top.width - 12) // 2 + 12)
-            by = buttons_top.y + (idx // 2) * 56
-            button_rect = pygame.Rect(bx, by, (buttons_top.width - 12) // 2, 44)
-            pygame.draw.rect(surface, color, button_rect, border_radius=14)
-            pygame.draw.rect(surface, TEXT_PRIMARY, button_rect, 2, border_radius=14)
-            _draw_text(surface, app.fonts["body"], label, button_rect.center, (15, 18, 25), anchor="center")
-            self.action_hitboxes.append((action_id, button_rect))
-
-        status_rect = pygame.Rect(right.x, buttons_top.bottom + 18, right.width, 48)
-        pygame.draw.rect(surface, PANEL_ALT, status_rect, border_radius=12)
-        pygame.draw.rect(surface, self.status_color, status_rect, 2, border_radius=12)
-        _draw_text(surface, app.fonts["body"], self.status_text, status_rect.center, TEXT_PRIMARY, anchor="center")
-
-        editor_rect = pygame.Rect(right.x, status_rect.bottom + 18, right.width, 54)
-        pygame.draw.rect(surface, (11, 14, 22), editor_rect, border_radius=12)
-        pygame.draw.rect(surface, ACCENT if self.selected_field_id else (53, 65, 82), editor_rect, 2, border_radius=12)
-        editor_text = self.edit_buffer if self.selected_field_id else "Select an editable field"
-        _draw_text(surface, app.fonts["mono"], editor_text, (editor_rect.x + 16, editor_rect.centery), TEXT_PRIMARY)
-
-        keypad_rect = pygame.Rect(right.x, editor_rect.bottom + 16, right.width, right.bottom - editor_rect.bottom - 16)
-        self._draw_keypad(app, surface, keypad_rect)
+        main_rect, status_rect = _draw_tab_shell(surface, rect, "Settings", "Runtime / Save", status_width=520)
+        self._draw_fields(surface, app, main_rect)
+        self._draw_actions(surface, app, status_rect)
 
     def handle_pointer_down(self, app: LaunchPiControllerApp, pos: tuple[int, int]) -> None:
         for field_id, rect in self.field_hitboxes:
@@ -429,7 +397,58 @@ class SettingsTab(BaseTab):
                 self._handle_action(app, action_id)
                 return
 
-    def _draw_keypad(self, app: LaunchPiControllerApp, surface: pygame.Surface, rect: pygame.Rect) -> None:
+    def _draw_fields(self, surface: pygame.Surface, app: LaunchPiControllerApp, rect: pygame.Rect) -> None:
+        self.field_hitboxes = []
+        fields = self._fields(app)
+        columns = 2
+        gap = 8
+        row_h = 38
+        col_w = (rect.width - gap) // columns
+        for idx, field in enumerate(fields):
+            col = idx // 6
+            row = idx % 6
+            field_rect = pygame.Rect(rect.x + col * (col_w + gap), rect.y + row * (row_h + gap), col_w, row_h)
+            bg = PANEL_ALT if field["editable"] else STATUS_ALT
+            pygame.draw.rect(surface, bg, field_rect, border_radius=10)
+            border = ACCENT if self.selected_field_id == field["id"] else OUTLINE
+            pygame.draw.rect(surface, border, field_rect, 2, border_radius=10)
+            _draw_text(surface, _get_font("DejaVu Sans", 15, True), field["label"], (field_rect.x + 12, field_rect.centery - 8), TEXT_MUTED)
+            _draw_text(surface, _get_font("DejaVu Sans Mono", 15, False), field["value"], (field_rect.x + 12, field_rect.centery + 9), TEXT_PRIMARY)
+            self.field_hitboxes.append((field["id"], field_rect))
+
+    def _draw_actions(self, surface: pygame.Surface, app: LaunchPiControllerApp, rect: pygame.Rect) -> None:
+        self.action_hitboxes = []
+        action_defs = [
+            ("toggle_heartbeat", f"Heartbeat {'ON' if app.config.effect_device.send_heartbeat else 'OFF'}", ACCENT_ALT),
+            ("toggle_sync", f"Sync {'ON' if app.config.preview.use_sync else 'OFF'}", ACCENT),
+            ("toggle_fullscreen", f"Fullscreen {'ON' if app.config.display.fullscreen else 'OFF'}", SUCCESS),
+            ("restart_runtime", "Restart I/O", ACCENT),
+        ]
+        button_w = (rect.width - 12) // 2
+        for idx, (action_id, label, color) in enumerate(action_defs):
+            bx = rect.x + (idx % 2) * (button_w + 12)
+            by = rect.y + (idx // 2) * 48
+            button_rect = pygame.Rect(bx, by, button_w, 40)
+            pygame.draw.rect(surface, color, button_rect, border_radius=12)
+            pygame.draw.rect(surface, TEXT_PRIMARY, button_rect, 2, border_radius=12)
+            _draw_text(surface, _get_font("DejaVu Sans", 15, True), label, button_rect.center, TEXT_DARK, anchor="center")
+            self.action_hitboxes.append((action_id, button_rect))
+
+        status_rect = pygame.Rect(rect.x, rect.y + 98, rect.width, 42)
+        pygame.draw.rect(surface, STATUS_ALT, status_rect, border_radius=10)
+        pygame.draw.rect(surface, self.status_color, status_rect, 2, border_radius=10)
+        _draw_text(surface, _get_font("DejaVu Sans", 15, False), self.status_text, status_rect.center, TEXT_PRIMARY, anchor="center")
+
+        editor_rect = pygame.Rect(rect.x, status_rect.bottom + 8, rect.width, 42)
+        pygame.draw.rect(surface, STATUS_BACKGROUND, editor_rect, border_radius=10)
+        pygame.draw.rect(surface, ACCENT if self.selected_field_id else OUTLINE, editor_rect, 2, border_radius=10)
+        editor_text = self.edit_buffer if self.selected_field_id else "Select an editable field"
+        _draw_text(surface, _get_font("DejaVu Sans Mono", 15, False), editor_text, (editor_rect.x + 12, editor_rect.centery), TEXT_PRIMARY)
+
+        keypad_rect = pygame.Rect(rect.x, editor_rect.bottom + 8, rect.width, rect.bottom - editor_rect.bottom - 8)
+        self._draw_keypad(surface, keypad_rect)
+
+    def _draw_keypad(self, surface: pygame.Surface, rect: pygame.Rect) -> None:
         keys = [
             "7", "8", "9", "DEL",
             "4", "5", "6", "CLR",
@@ -437,21 +456,24 @@ class SettingsTab(BaseTab):
             "0", "APPLY", "SAVE", "RELOAD",
         ]
         self.keypad_hitboxes = []
-        cell_w = (rect.width - 18) // 4
-        cell_h = (rect.height - 18) // 4
+        gap = 6
+        cell_w = (rect.width - gap * 3) // 4
+        cell_h = (rect.height - gap * 3) // 4
         for idx, key in enumerate(keys):
             row = idx // 4
             col = idx % 4
-            button_rect = pygame.Rect(rect.x + col * (cell_w + 6), rect.y + row * (cell_h + 6), cell_w, cell_h)
-            color = (27, 36, 49)
+            button_rect = pygame.Rect(rect.x + col * (cell_w + gap), rect.y + row * (cell_h + gap), cell_w, cell_h)
+            color = PANEL_ALT
+            text_color = TEXT_PRIMARY
             if key in {"APPLY", "SAVE"}:
                 color = ACCENT
+                text_color = TEXT_DARK
             elif key == "RELOAD":
                 color = ACCENT_ALT
-            pygame.draw.rect(surface, color, button_rect, border_radius=16)
-            pygame.draw.rect(surface, TEXT_PRIMARY, button_rect, 2, border_radius=16)
-            text_color = (15, 18, 25) if key in {"APPLY", "SAVE"} else TEXT_PRIMARY
-            _draw_text(surface, app.fonts["body"], key, button_rect.center, text_color, anchor="center")
+                text_color = TEXT_DARK
+            pygame.draw.rect(surface, color, button_rect, border_radius=12)
+            pygame.draw.rect(surface, OUTLINE if text_color == TEXT_PRIMARY else TEXT_PRIMARY, button_rect, 2, border_radius=12)
+            _draw_text(surface, _get_font("DejaVu Sans", 15, True), key, button_rect.center, text_color, anchor="center")
             self.keypad_hitboxes.append((key, button_rect))
 
     def _fields(self, app: LaunchPiControllerApp) -> list[dict[str, Any]]:
@@ -480,7 +502,6 @@ class SettingsTab(BaseTab):
                 self.status_text = str(ex)
                 self.status_color = WARNING
             return
-
         if key == "RELOAD":
             try:
                 app.reload_config_from_disk()
@@ -492,12 +513,10 @@ class SettingsTab(BaseTab):
                 self.status_text = str(ex)
                 self.status_color = WARNING
             return
-
         if self.selected_field_id is None:
             self.status_text = "Select a field first"
             self.status_color = TEXT_MUTED
             return
-
         if key == "DEL":
             self.edit_buffer = self.edit_buffer[:-1]
             return
@@ -517,14 +536,11 @@ class SettingsTab(BaseTab):
                 _validate_ip(value)
                 self._assign_string_field(app, self.selected_field_id, value)
             elif self.selected_field_id in {"effect_port", "heartbeat_port", "preview_port"}:
-                parsed = _validate_int(value, 1, 65535)
-                self._assign_int_field(app, self.selected_field_id, parsed)
+                self._assign_int_field(app, self.selected_field_id, _validate_int(value, 1, 65535))
             elif self.selected_field_id == "preview_net":
-                parsed = _validate_int(value, 0, 255)
-                app.config.preview.net = parsed
+                app.config.preview.net = _validate_int(value, 0, 255)
             elif self.selected_field_id in {"preview_cols", "preview_rows"}:
-                parsed = _validate_int(value, 1, 256)
-                self._assign_int_field(app, self.selected_field_id, parsed)
+                self._assign_int_field(app, self.selected_field_id, _validate_int(value, 1, 256))
             else:
                 raise ValueError("This field cannot be edited in v1")
 
@@ -581,6 +597,71 @@ class SettingsTab(BaseTab):
             self.status_color = SUCCESS
 
 
+def _draw_tab_shell(
+    surface: pygame.Surface,
+    rect: pygame.Rect,
+    title: str,
+    status_title: str,
+    status_width: int,
+) -> tuple[pygame.Rect, pygame.Rect]:
+    pygame.draw.rect(surface, PANEL_BACKGROUND, rect, border_radius=18)
+    pygame.draw.rect(surface, OUTLINE, rect, 2, border_radius=18)
+
+    inner = rect.inflate(-8, -8)
+    status_rect = pygame.Rect(inner.right - status_width, inner.y, status_width, inner.height)
+    main_rect = pygame.Rect(inner.x, inner.y, status_rect.x - inner.x - 8, inner.height)
+
+    pygame.draw.rect(surface, STATUS_BACKGROUND, status_rect, border_radius=14)
+    pygame.draw.rect(surface, OUTLINE, status_rect, 2, border_radius=14)
+    return main_rect, pygame.Rect(status_rect.x + 8, status_rect.y + 8, status_rect.width - 16, status_rect.height - 16)
+
+
+def _draw_status_lines(
+    surface: pygame.Surface,
+    rect: pygame.Rect,
+    lines: list[tuple[str, str]],
+    reserve_bottom: int = 0,
+) -> pygame.Rect:
+    y = rect.y
+    row_h = 32
+    usable = pygame.Rect(rect.x, rect.y, rect.width, max(0, rect.height - reserve_bottom))
+    for label, value in lines:
+        row = pygame.Rect(usable.x, y, usable.width, 28)
+        pygame.draw.rect(surface, STATUS_ALT, row, border_radius=10)
+        _draw_text(surface, _get_font("DejaVu Sans", 14, True), label, (row.x + 10, row.centery), TEXT_MUTED)
+        _draw_text(surface, _get_font("DejaVu Sans Mono", 14, False), value, (row.right - 10, row.centery), TEXT_PRIMARY, anchor="right")
+        y += row_h
+        if y + row_h > usable.bottom:
+            break
+    if reserve_bottom:
+        return pygame.Rect(rect.x, rect.bottom - reserve_bottom + 8, rect.width, max(0, reserve_bottom - 8))
+    return pygame.Rect(rect.x, y, rect.width, max(0, rect.bottom - y))
+
+
+def _draw_status_box_message(surface: pygame.Surface, rect: pygame.Rect, title: str, message: str) -> None:
+    _draw_text(surface, _get_font("DejaVu Sans", 18, True), title, (rect.x + 4, rect.y + 18), TEXT_PRIMARY)
+    _draw_text(surface, _get_font("DejaVu Sans", 15, False), message, (rect.x + 4, rect.y + 46), TEXT_MUTED)
+
+
+def _draw_center_notice(surface: pygame.Surface, rect: pygame.Rect, title: str, subtitle: str) -> None:
+    _draw_text(surface, _get_font("DejaVu Sans", 28, True), title, (rect.centerx, rect.centery - 10), TEXT_PRIMARY, anchor="center")
+    _draw_text(surface, _get_font("DejaVu Sans", 18, False), subtitle, (rect.centerx, rect.centery + 18), TEXT_MUTED, anchor="center")
+
+
+def _format_age(value: float) -> str:
+    if value < 0:
+        return "never"
+    return f"{value:.1f}s"
+
+
+def _format_feedback_age(value: float) -> str:
+    if value < 0:
+        return "No feedback"
+    if value < 3:
+        return f"{value:.1f}s ago"
+    return "stale"
+
+
 def _validate_ip(value: str) -> None:
     try:
         ipaddress.ip_address(value)
@@ -593,18 +674,6 @@ def _validate_int(value: str, minimum: int, maximum: int) -> int:
     if parsed < minimum or parsed > maximum:
         raise ValueError(f"Value must be in [{minimum}, {maximum}]")
     return parsed
-
-
-def _draw_panel(surface: pygame.Surface, rect: pygame.Rect, title: str, subtitle: str) -> None:
-    pygame.draw.rect(surface, PANEL_BACKGROUND, rect, border_radius=28)
-    pygame.draw.rect(surface, (52, 65, 83), rect, 2, border_radius=28)
-    _draw_text(surface, _get_font("DejaVu Sans", 30, True), title, (rect.x + 28, rect.y + 26), TEXT_PRIMARY)
-    _draw_text(surface, _get_font("DejaVu Sans", 18, False), subtitle, (rect.x + 30, rect.y + 62), TEXT_MUTED)
-
-
-def _draw_center_notice(surface: pygame.Surface, rect: pygame.Rect, title: str, subtitle: str) -> None:
-    _draw_text(surface, _get_font("DejaVu Sans", 30, True), title, (rect.centerx, rect.centery - 16), TEXT_PRIMARY, anchor="center")
-    _draw_text(surface, _get_font("DejaVu Sans", 20, False), subtitle, (rect.centerx, rect.centery + 16), TEXT_MUTED, anchor="center")
 
 
 def _draw_text(
@@ -624,13 +693,6 @@ def _draw_text(
     else:
         rect.midleft = pos
     surface.blit(rendered, rect)
-
-
-def _draw_info_badge(surface: pygame.Surface, rect: pygame.Rect, text: str, color: tuple[int, int, int]) -> None:
-    badge = pygame.Rect(rect.x, rect.y, min(rect.width, max(132, 26 + len(text) * 11)), rect.height)
-    pygame.draw.rect(surface, color, badge, border_radius=17)
-    pygame.draw.rect(surface, (240, 244, 247), badge, 2, border_radius=17)
-    _draw_text(surface, _get_font("DejaVu Sans", 17, True), text, badge.center, (12, 16, 24), anchor="center")
 
 
 def _get_font(name: str, size: int, bold: bool) -> pygame.font.Font:

@@ -49,6 +49,9 @@ class LaunchPiControllerApp:
         self.display_surface: pygame.Surface | None = None
         self.clock: pygame.time.Clock | None = None
         self.display_rotation = 0
+        self.render_fps = 0.0
+        self._fps_frames = 0
+        self._fps_timer_ms = 0
 
     def run(self) -> int:
         pygame.init()
@@ -62,6 +65,7 @@ class LaunchPiControllerApp:
         }
         self.apply_display_mode()
         self.restart_services()
+        self._fps_timer_ms = pygame.time.get_ticks()
 
         running = True
         while running:
@@ -97,6 +101,7 @@ class LaunchPiControllerApp:
                     )
 
             self._draw()
+            self._update_render_fps()
             assert self.clock is not None
             self.clock.tick(max(20, int(self.config.display.fps)))
 
@@ -240,35 +245,31 @@ class LaunchPiControllerApp:
         self._draw_background(surface)
 
         width, height = surface.get_size()
-        sidebar = pygame.Rect(18, 18, 160, height - 36)
-        content = pygame.Rect(sidebar.right + 18, 18, width - sidebar.width - 54, height - 36)
+        sidebar = pygame.Rect(8, 8, 128, height - 16)
+        content = pygame.Rect(sidebar.right + 8, 8, width - sidebar.width - 24, height - 16)
 
-        pygame.draw.rect(surface, (15, 20, 28), sidebar, border_radius=26)
-        pygame.draw.rect(surface, (58, 71, 90), sidebar, 2, border_radius=26)
-        title_rect = pygame.Rect(sidebar.x + 18, sidebar.y + 16, sidebar.width - 36, 74)
-        pygame.draw.rect(surface, PANEL_ALT, title_rect, border_radius=20)
-        pygame.draw.rect(surface, ACCENT, title_rect, 2, border_radius=20)
-        self._draw_text("Pi", (title_rect.x + 18, title_rect.y + 25), self.fonts["title"], TEXT_PRIMARY)
-        self._draw_text("Controller", (title_rect.x + 18, title_rect.y + 51), self.fonts["small"], TEXT_MUTED)
+        pygame.draw.rect(surface, (40, 41, 46), sidebar, border_radius=18)
+        pygame.draw.rect(surface, (94, 84, 72), sidebar, 2, border_radius=18)
 
         self.tab_hitboxes = []
-        tab_top = title_rect.bottom + 18
+        tab_top = sidebar.y + 8
         for idx, tab in enumerate(self.tabs):
-            tab_rect = pygame.Rect(sidebar.x + 14, tab_top + idx * 66, sidebar.width - 28, 54)
+            tab_rect = pygame.Rect(sidebar.x + 22, tab_top + idx * 52, sidebar.width - 30, 46)
             active = idx == self.active_tab_index
-            color = ACCENT if active else (28, 36, 49)
-            text_color = (15, 18, 24) if active else TEXT_PRIMARY
-            pygame.draw.rect(surface, color, tab_rect, border_radius=18)
-            pygame.draw.rect(surface, (236, 240, 244) if active else (61, 75, 94), tab_rect, 2, border_radius=18)
-            label = tab.title if len(tab.title) <= 10 else tab.title[:10]
+            color = ACCENT if active else PANEL_ALT
+            text_color = (26, 24, 22) if active else TEXT_PRIMARY
+            border = TEXT_PRIMARY if active else (96, 88, 78)
+            pygame.draw.rect(surface, color, tab_rect, border_radius=14)
+            pygame.draw.rect(surface, border, tab_rect, 2, border_radius=14)
+            label = tab.title if len(tab.title) <= 9 else tab.title[:9]
             self._draw_text(label, tab_rect.center, self.fonts["body"], text_color, anchor="center")
             self.tab_hitboxes.append((idx, tab_rect))
 
-        footer = pygame.Rect(sidebar.x + 14, sidebar.bottom - 84, sidebar.width - 28, 70)
-        pygame.draw.rect(surface, (11, 15, 21), footer, border_radius=18)
-        pygame.draw.rect(surface, (58, 71, 90), footer, 2, border_radius=18)
-        self._draw_text("F5 Restart", (footer.x + 14, footer.y + 24), self.fonts["small"], TEXT_PRIMARY)
-        self._draw_text("Esc Exit", (footer.x + 14, footer.y + 46), self.fonts["small"], TEXT_MUTED)
+        footer = pygame.Rect(sidebar.x + 22, sidebar.bottom - 50, sidebar.width - 30, 42)
+        pygame.draw.rect(surface, (28, 29, 33), footer, border_radius=12)
+        pygame.draw.rect(surface, (96, 88, 78), footer, 2, border_radius=12)
+        self._draw_text("F5", (footer.x + 10, footer.y + 13), self.fonts["small"], TEXT_PRIMARY)
+        self._draw_text("ESC", (footer.x + 10, footer.y + 28), self.fonts["small"], TEXT_MUTED)
 
         self.current_tab.draw(self, surface, content)
         self._present()
@@ -287,18 +288,17 @@ class LaunchPiControllerApp:
         pygame.display.flip()
 
     def _draw_background(self, surface: pygame.Surface) -> None:
-        width, height = surface.get_size()
-        for y in range(height):
-            mix = y / max(1, height - 1)
-            r = int(10 + 18 * mix)
-            g = int(14 + 24 * mix)
-            b = int(24 + 40 * mix)
-            pygame.draw.line(surface, (r, g, b), (0, y), (width, y))
-        for x in range(0, width, 120):
-            alpha = 16 if (x // 120) % 2 == 0 else 8
-            stripe = pygame.Surface((56, height), pygame.SRCALPHA)
-            stripe.fill((120, 210, 198, alpha))
-            surface.blit(stripe, (x, 0))
+        surface.fill((0, 0, 0))
+
+    def _update_render_fps(self) -> None:
+        self._fps_frames += 1
+        now_ms = pygame.time.get_ticks()
+        elapsed = now_ms - self._fps_timer_ms
+        if elapsed < 1000:
+            return
+        self.render_fps = self._fps_frames * 1000.0 / elapsed
+        self._fps_frames = 0
+        self._fps_timer_ms = now_ms
 
     def _draw_text(
         self,
