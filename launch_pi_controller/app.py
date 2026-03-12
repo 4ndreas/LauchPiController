@@ -129,8 +129,7 @@ class LaunchPiControllerApp:
 
         logical_size = (self.config.display.width, self.config.display.height)
         self.display_surface = pygame.display.set_mode(logical_size, flags)
-        display_size = self.display_surface.get_size()
-        self.display_rotation = self._detect_display_rotation(logical_size, display_size)
+        self.display_rotation = self._normalize_rotation(self.config.display.rotation)
 
         if self.display_rotation:
             # KMSDRM still exposes the portrait framebuffer, so render into a
@@ -208,25 +207,20 @@ class LaunchPiControllerApp:
             if self.active_tab_index == 0:
                 return True
             return False
-        if self.active_tab_index == 0 and self.preview_service is not None:
+        if (
+            self.active_tab_index == 0
+            and self.preview_service is not None
+            and self.config.preview.render_mode == "image"
+        ):
             stats = self.preview_service.get_stats()
             generation = int(stats["visible_generation"])
             if generation != self._last_preview_generation:
                 return True
         return False
 
-    def _detect_display_rotation(
-        self,
-        logical_size: tuple[int, int],
-        display_size: tuple[int, int],
-    ) -> int:
-        logical_w, logical_h = logical_size
-        display_w, display_h = display_size
-        if (logical_w >= logical_h) == (display_w >= display_h):
-            return 0
-        if display_size == (logical_h, logical_w):
-            return 270 if logical_w >= logical_h else 90
-        return 0
+    def _normalize_rotation(self, value: int) -> int:
+        normalized = int(value) % 360
+        return normalized if normalized in (0, 90, 180, 270) else 0
 
     def _window_to_logical(self, pos: tuple[int, int]) -> tuple[int, int]:
         assert self.screen is not None
@@ -280,7 +274,11 @@ class LaunchPiControllerApp:
         assert self.screen is not None
         self._needs_redraw = False
         self._last_ui_refresh_ms = pygame.time.get_ticks()
-        if self.active_tab_index == 0 and self.preview_service is not None:
+        if (
+            self.active_tab_index == 0
+            and self.preview_service is not None
+            and self.config.preview.render_mode == "image"
+        ):
             stats = self.preview_service.get_stats()
             self._last_preview_generation = int(stats["visible_generation"])
         surface = self.screen

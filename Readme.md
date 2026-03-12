@@ -411,5 +411,7 @@ The default config is stored in `config.json`.
 Important:
 
 - the checked-in default config uses loopback (`127.0.0.1`) for the Effect device and heartbeat target
+- the checked-in default config is now Pi-oriented: `display.rotation = 90` and `preview.render_mode = "status"`
+- for desktop testing, switch to `display.rotation = 0` and `preview.render_mode = "image"` if you want the Python app to draw live preview pixels
 - on the Raspberry Pi, update those addresses in the Settings tab or in `config.json`
 - the current heartbeat name is display-only in the UI and should be edited in `config.json` if needed

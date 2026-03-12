@@ -71,6 +71,7 @@ class PreviewTab(BaseTab):
     def draw(self, app: LaunchPiControllerApp, surface: pygame.Surface, rect: pygame.Rect) -> None:
         main_rect, status_rect = _draw_tab_shell(surface, rect, "Preview", "Signal / Art-Net", status_width=312)
         preview_rect = main_rect.inflate(-2, -2)
+        render_mode = app.config.preview.render_mode
 
         if app.preview_service is None:
             _draw_status_box_message(surface, status_rect, "Offline", app.preview_error or "Preview service is not running")
@@ -78,42 +79,48 @@ class PreviewTab(BaseTab):
             return
 
         stats = app.preview_service.get_stats()
-        generation = int(stats["visible_generation"])
-        if (
-            self._small_surface is None
-            or self._small_surface.get_size() != (int(stats["cols"]), int(stats["rows"]))
-        ):
-            self._small_surface = pygame.Surface((int(stats["cols"]), int(stats["rows"])))
-            self._cached_generation = -1
-        if self._scaled_surface is None or self._cached_size != preview_rect.size:
-            self._scaled_surface = pygame.Surface(preview_rect.size)
-            self._cached_size = preview_rect.size
-            self._cached_generation = -1
+        if render_mode == "image":
+            generation = int(stats["visible_generation"])
+            if (
+                self._small_surface is None
+                or self._small_surface.get_size() != (int(stats["cols"]), int(stats["rows"]))
+            ):
+                self._small_surface = pygame.Surface((int(stats["cols"]), int(stats["rows"])))
+                self._cached_generation = -1
+            if self._scaled_surface is None or self._cached_size != preview_rect.size:
+                self._scaled_surface = pygame.Surface(preview_rect.size)
+                self._cached_size = preview_rect.size
+                self._cached_generation = -1
 
-        if generation != self._cached_generation:
-            frame = app.preview_service.get_frame_copy()
-            arr = frame.transpose((1, 0, 2))
-            pygame.surfarray.blit_array(self._small_surface, arr)
-            pygame.transform.scale(self._small_surface, preview_rect.size, self._scaled_surface)
-            self._cached_generation = generation
+            if generation != self._cached_generation:
+                frame = app.preview_service.get_frame_copy()
+                arr = frame.transpose((1, 0, 2))
+                pygame.surfarray.blit_array(self._small_surface, arr)
+                pygame.transform.scale(self._small_surface, preview_rect.size, self._scaled_surface)
+                self._cached_generation = generation
 
-        surface.blit(self._scaled_surface, preview_rect.topleft)
-        pygame.draw.rect(surface, (83, 79, 74), preview_rect, 1, border_radius=12)
-        fps_rect = pygame.Rect(preview_rect.x + 10, preview_rect.y + 10, 96, 28)
-        pygame.draw.rect(surface, (24, 24, 27), fps_rect, border_radius=10)
-        pygame.draw.rect(surface, OUTLINE, fps_rect, 1, border_radius=10)
-        _draw_text(surface, _get_font("DejaVu Sans Mono", 15, True), f"{app.render_fps:04.1f} fps", fps_rect.center, TEXT_PRIMARY, anchor="center")
+            surface.blit(self._scaled_surface, preview_rect.topleft)
+            pygame.draw.rect(surface, (83, 79, 74), preview_rect, 1, border_radius=12)
+            fps_rect = pygame.Rect(preview_rect.x + 10, preview_rect.y + 10, 96, 28)
+            pygame.draw.rect(surface, (24, 24, 27), fps_rect, border_radius=10)
+            pygame.draw.rect(surface, OUTLINE, fps_rect, 1, border_radius=10)
+            _draw_text(surface, _get_font("DejaVu Sans Mono", 15, True), f"{app.render_fps:04.1f} fps", fps_rect.center, TEXT_PRIMARY, anchor="center")
 
-        if not stats["has_signal"]:
-            overlay = pygame.Surface(preview_rect.size, pygame.SRCALPHA)
-            overlay.fill((18, 17, 18, 170))
-            surface.blit(overlay, preview_rect.topleft)
-            _draw_center_notice(surface, preview_rect, "No Art-Net", "Waiting for frames")
+            if not stats["has_signal"]:
+                overlay = pygame.Surface(preview_rect.size, pygame.SRCALPHA)
+                overlay.fill((18, 17, 18, 170))
+                surface.blit(overlay, preview_rect.topleft)
+                _draw_center_notice(surface, preview_rect, "No Art-Net", "Waiting for frames")
+        else:
+            pygame.draw.rect(surface, STATUS_BACKGROUND, preview_rect, border_radius=14)
+            pygame.draw.rect(surface, OUTLINE, preview_rect, 2, border_radius=14)
+            _draw_center_notice(surface, preview_rect, "Preview disabled", "Use the C++ PiDisplay renderer for live pixels on Pi 3")
 
         _draw_status_lines(
             surface,
             status_rect,
             [
+                ("Mode", render_mode),
                 ("Matrix", f"{int(stats['cols'])} x {int(stats['rows'])}"),
                 ("DMX packets", str(int(stats["dmx_packets"]))),
                 ("Sync packets", str(int(stats["sync_packets"]))),
@@ -425,9 +432,10 @@ class SettingsTab(BaseTab):
         gap = 8
         row_h = 38
         col_w = (rect.width - gap) // columns
+        per_col = (len(fields) + columns - 1) // columns
         for idx, field in enumerate(fields):
-            col = idx // 6
-            row = idx % 6
+            col = idx // per_col
+            row = idx % per_col
             field_rect = pygame.Rect(rect.x + col * (col_w + gap), rect.y + row * (row_h + gap), col_w, row_h)
             bg = PANEL_ALT if field["editable"] else STATUS_ALT
             pygame.draw.rect(surface, bg, field_rect, border_radius=10)
@@ -442,6 +450,8 @@ class SettingsTab(BaseTab):
         action_defs = [
             ("toggle_heartbeat", f"Heartbeat {'ON' if app.config.effect_device.send_heartbeat else 'OFF'}", ACCENT_ALT),
             ("toggle_sync", f"Sync {'ON' if app.config.preview.use_sync else 'OFF'}", ACCENT),
+            ("rotate_display", f"Rotate {app.config.display.rotation}", SUCCESS),
+            ("toggle_preview_mode", f"Preview {app.config.preview.render_mode.upper()}", ACCENT_ALT),
             ("toggle_fullscreen", f"Fullscreen {'ON' if app.config.display.fullscreen else 'OFF'}", SUCCESS),
             ("restart_runtime", "Restart I/O", ACCENT),
         ]
@@ -455,7 +465,7 @@ class SettingsTab(BaseTab):
             _draw_text(surface, _get_font("DejaVu Sans", 15, True), label, button_rect.center, TEXT_DARK, anchor="center")
             self.action_hitboxes.append((action_id, button_rect))
 
-        status_rect = pygame.Rect(rect.x, rect.y + 98, rect.width, 42)
+        status_rect = pygame.Rect(rect.x, rect.y + 146, rect.width, 42)
         pygame.draw.rect(surface, STATUS_ALT, status_rect, border_radius=10)
         pygame.draw.rect(surface, self.status_color, status_rect, 2, border_radius=10)
         _draw_text(surface, _get_font("DejaVu Sans", 15, False), self.status_text, status_rect.center, TEXT_PRIMARY, anchor="center")
@@ -511,6 +521,8 @@ class SettingsTab(BaseTab):
             {"id": "preview_net", "label": "Preview net", "value": str(cfg.preview.net), "editable": True},
             {"id": "preview_cols", "label": "Preview cols", "value": str(cfg.preview.cols), "editable": True},
             {"id": "preview_rows", "label": "Preview rows", "value": str(cfg.preview.rows), "editable": True},
+            {"id": "display_rotation", "label": "Display rotation", "value": str(cfg.display.rotation), "editable": False},
+            {"id": "preview_mode", "label": "Preview mode", "value": cfg.preview.render_mode, "editable": False},
         ]
 
     def _handle_keypress(self, app: LaunchPiControllerApp, key: str) -> None:
@@ -604,6 +616,22 @@ class SettingsTab(BaseTab):
         if action_id == "toggle_sync":
             app.config.preview.use_sync = not app.config.preview.use_sync
             self.status_text = "Preview sync flag updated"
+            self.status_color = SUCCESS
+            app.request_redraw()
+            return
+        if action_id == "rotate_display":
+            sequence = [0, 90, 180, 270]
+            current = app.config.display.rotation if app.config.display.rotation in sequence else 0
+            app.config.display.rotation = sequence[(sequence.index(current) + 1) % len(sequence)]
+            app.apply_display_mode()
+            self.status_text = f"Rotation set to {app.config.display.rotation}"
+            self.status_color = SUCCESS
+            return
+        if action_id == "toggle_preview_mode":
+            app.config.preview.render_mode = "image" if app.config.preview.render_mode != "image" else "status"
+            app._last_preview_generation = -1
+            app.request_redraw()
+            self.status_text = f"Preview mode: {app.config.preview.render_mode}"
             self.status_color = SUCCESS
             return
         if action_id == "toggle_fullscreen":

@@ -10,6 +10,7 @@ from typing import Any
 class DisplayConfig:
     width: int = 1920
     height: int = 480
+    rotation: int = 90
     fullscreen: bool = False
     fps: int = 60
     hide_mouse: bool = False
@@ -23,6 +24,7 @@ class PreviewConfig:
     cols: int = 32
     rows: int = 16
     use_sync: bool = True
+    render_mode: str = "status"
 
 
 @dataclass(slots=True)
