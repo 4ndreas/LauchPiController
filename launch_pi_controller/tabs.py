@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import ipaddress
-import math
 from typing import TYPE_CHECKING, Any
 
 import pygame
@@ -63,6 +62,12 @@ class BaseTab:
 class PreviewTab(BaseTab):
     title = "Preview"
 
+    def __init__(self) -> None:
+        self._small_surface: pygame.Surface | None = None
+        self._scaled_surface: pygame.Surface | None = None
+        self._cached_generation = -1
+        self._cached_size: tuple[int, int] = (0, 0)
+
     def draw(self, app: LaunchPiControllerApp, surface: pygame.Surface, rect: pygame.Rect) -> None:
         main_rect, status_rect = _draw_tab_shell(surface, rect, "Preview", "Signal / Art-Net", status_width=312)
         preview_rect = main_rect.inflate(-2, -2)
@@ -72,11 +77,27 @@ class PreviewTab(BaseTab):
             _draw_center_notice(surface, preview_rect, "Preview offline", "Bind error or service not started")
             return
 
-        frame, stats = app.preview_service.get_snapshot()
-        arr = frame.transpose((1, 0, 2))
-        preview_surface = pygame.surfarray.make_surface(arr)
-        stretched = pygame.transform.scale(preview_surface, preview_rect.size)
-        surface.blit(stretched, preview_rect.topleft)
+        stats = app.preview_service.get_stats()
+        generation = int(stats["visible_generation"])
+        if (
+            self._small_surface is None
+            or self._small_surface.get_size() != (int(stats["cols"]), int(stats["rows"]))
+        ):
+            self._small_surface = pygame.Surface((int(stats["cols"]), int(stats["rows"])))
+            self._cached_generation = -1
+        if self._scaled_surface is None or self._cached_size != preview_rect.size:
+            self._scaled_surface = pygame.Surface(preview_rect.size)
+            self._cached_size = preview_rect.size
+            self._cached_generation = -1
+
+        if generation != self._cached_generation:
+            frame = app.preview_service.get_frame_copy()
+            arr = frame.transpose((1, 0, 2))
+            pygame.surfarray.blit_array(self._small_surface, arr)
+            pygame.transform.scale(self._small_surface, preview_rect.size, self._scaled_surface)
+            self._cached_generation = generation
+
+        surface.blit(self._scaled_surface, preview_rect.topleft)
         pygame.draw.rect(surface, (83, 79, 74), preview_rect, 1, border_radius=12)
         fps_rect = pygame.Rect(preview_rect.x + 10, preview_rect.y + 10, 96, 28)
         pygame.draw.rect(surface, (24, 24, 27), fps_rect, border_radius=10)

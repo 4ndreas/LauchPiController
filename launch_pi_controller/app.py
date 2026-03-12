@@ -52,6 +52,9 @@ class LaunchPiControllerApp:
         self.render_fps = 0.0
         self._fps_frames = 0
         self._fps_timer_ms = 0
+        self._needs_redraw = True
+        self._last_ui_refresh_ms = 0
+        self._last_preview_generation = -1
 
     def run(self) -> int:
         pygame.init()
@@ -66,6 +69,7 @@ class LaunchPiControllerApp:
         self.apply_display_mode()
         self.restart_services()
         self._fps_timer_ms = pygame.time.get_ticks()
+        self._last_ui_refresh_ms = self._fps_timer_ms
 
         running = True
         while running:
@@ -77,10 +81,12 @@ class LaunchPiControllerApp:
                     running = False
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_F5:
                     self.restart_services()
+                    self.request_redraw()
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     self._handle_pointer_down(self._window_to_logical(event.pos))
                 elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                     self.current_tab.handle_pointer_up(self, self._window_to_logical(event.pos))
+                    self.request_redraw()
                 elif event.type == pygame.MOUSEMOTION and any(event.buttons):
                     self.current_tab.handle_pointer_motion(
                         self,
@@ -88,10 +94,12 @@ class LaunchPiControllerApp:
                         self._window_delta_to_logical(event.rel),
                         event.buttons,
                     )
+                    self.request_redraw()
                 elif event.type == pygame.FINGERDOWN:
                     self._handle_pointer_down(self._finger_to_pixels(event))
                 elif event.type == pygame.FINGERUP:
                     self.current_tab.handle_pointer_up(self, self._finger_to_pixels(event))
+                    self.request_redraw()
                 elif event.type == pygame.FINGERMOTION:
                     self.current_tab.handle_pointer_motion(
                         self,
@@ -99,11 +107,13 @@ class LaunchPiControllerApp:
                         self._finger_delta_to_pixels(event),
                         (1, 0, 0),
                     )
+                    self.request_redraw()
 
-            self._draw()
-            self._update_render_fps()
+            if self._should_redraw():
+                self._draw()
+                self._update_render_fps()
             assert self.clock is not None
-            self.clock.tick(max(20, int(self.config.display.fps)))
+            self.clock.tick(60)
 
         self.close()
         return 0
@@ -131,6 +141,7 @@ class LaunchPiControllerApp:
 
         pygame.display.set_caption("Pi Launchpad Controller")
         pygame.mouse.set_visible(not self.config.display.hide_mouse)
+        self.request_redraw()
 
     def restart_services(self) -> None:
         if self.effect_device is not None:
@@ -152,6 +163,8 @@ class LaunchPiControllerApp:
             self.preview_service = ArtnetPreviewService(self.config.preview)
         except OSError as ex:
             self.preview_error = f"Preview bind failed: {ex}"
+        self._last_preview_generation = -1
+        self.request_redraw()
 
     def save_config(self) -> None:
         save_config(self.config, self.config_path)
@@ -168,17 +181,39 @@ class LaunchPiControllerApp:
             self.preview_service.close()
         pygame.quit()
 
+    def request_redraw(self) -> None:
+        self._needs_redraw = True
+
     def _queue_midi_message(self, message: MidiShortMessage) -> None:
         self.midi_queue.put(message)
 
     def _drain_midi_queue(self) -> None:
         effect_tab = self.tabs[1]
+        saw_message = False
         while True:
             try:
                 message = self.midi_queue.get_nowait()
             except queue.Empty:
                 break
             effect_tab.handle_midi_message(message, self.config.effect_device.channel)
+            saw_message = True
+        if saw_message:
+            self.request_redraw()
+
+    def _should_redraw(self) -> bool:
+        now_ms = pygame.time.get_ticks()
+        if self._needs_redraw:
+            return True
+        if now_ms - self._last_ui_refresh_ms >= 250:
+            if self.active_tab_index == 0:
+                return True
+            return False
+        if self.active_tab_index == 0 and self.preview_service is not None:
+            stats = self.preview_service.get_stats()
+            generation = int(stats["visible_generation"])
+            if generation != self._last_preview_generation:
+                return True
+        return False
 
     def _detect_display_rotation(
         self,
@@ -236,11 +271,18 @@ class LaunchPiControllerApp:
         for idx, rect in self.tab_hitboxes:
             if rect.collidepoint(pos):
                 self.active_tab_index = idx
+                self.request_redraw()
                 return
         self.current_tab.handle_pointer_down(self, pos)
+        self.request_redraw()
 
     def _draw(self) -> None:
         assert self.screen is not None
+        self._needs_redraw = False
+        self._last_ui_refresh_ms = pygame.time.get_ticks()
+        if self.active_tab_index == 0 and self.preview_service is not None:
+            stats = self.preview_service.get_stats()
+            self._last_preview_generation = int(stats["visible_generation"])
         surface = self.screen
         self._draw_background(surface)
 

@@ -27,6 +27,7 @@ class ArtnetPreviewService:
         self.last_sync_ts = 0.0
         self.dmx_packets = 0
         self.sync_packets = 0
+        self.visible_generation = 0
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind((config.bind_host, int(config.port)))
@@ -43,17 +44,28 @@ class ArtnetPreviewService:
         self.listener_thread.join(timeout=1.0)
 
     def get_snapshot(self) -> tuple[np.ndarray, dict[str, float | int | bool]]:
+        frame = self.get_frame_copy()
+        stats = self.get_stats()
+        return frame, stats
+
+    def get_frame_copy(self) -> np.ndarray:
         with self.lock:
             frame = self.frame.copy()
+        return frame
+
+    def get_stats(self) -> dict[str, float | int | bool]:
+        with self.lock:
             last_dmx_ts = self.last_dmx_ts
             last_sync_ts = self.last_sync_ts
             dmx_packets = self.dmx_packets
             sync_packets = self.sync_packets
+            visible_generation = self.visible_generation
 
         now = time.time()
-        return frame, {
+        return {
             "dmx_packets": dmx_packets,
             "sync_packets": sync_packets,
+            "visible_generation": visible_generation,
             "last_dmx_age_s": (now - last_dmx_ts) if last_dmx_ts else -1.0,
             "last_sync_age_s": (now - last_sync_ts) if last_sync_ts else -1.0,
             "has_signal": last_dmx_ts > 0.0 and (now - last_dmx_ts) < 2.0,
@@ -80,6 +92,7 @@ class ArtnetPreviewService:
                     self.last_sync_ts = time.time()
                     if self.config.use_sync:
                         self.frame[:, :, :] = self.pending_frame
+                        self.visible_generation += 1
                 continue
 
             net, subnet, _port_universe, dmx = payload
@@ -102,6 +115,7 @@ class ArtnetPreviewService:
                 flat[start_pixel : start_pixel + pixel_count] = rgb
                 if not self.config.use_sync:
                     self.frame[:, :, :] = self.pending_frame
+                    self.visible_generation += 1
                 self.dmx_packets += 1
                 self.last_dmx_ts = time.time()
 
